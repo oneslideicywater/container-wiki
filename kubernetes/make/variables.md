@@ -120,4 +120,28 @@ sample:
 	echo $(foo) # => foo = hello -s
 ```
 
-再举一个真实点的例子，增加
+
+## define
+
+定义多行变量
+
+```bash
+all:                    
+    @$(cmd)
+
+define cmd
+    echo "test define 1"
+    echo "test define 2"
+    echo "test define 3"
+endef
+```
+
+> `@`符号表示不回显命令本身.
+
+输出为：
+
+```bash
+test define 1
+test define 2
+test define 3
+```
