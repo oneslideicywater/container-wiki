@@ -101,11 +101,11 @@ drwxr-xr-x   12 root     root           137 Jan 28 21:51 var
 
 ### pivot_root和chroot的区别
 
-The main difference is that pivot_root is intended to switch the complete system over to a new root directory and remove dependencies on the old one, so that you would be able to unmount the original root directory and proceed as if it had never been in use.
+The main difference is that *pivot_root* is intended to switch the complete system over to a new root directory and remove dependencies on the old one, so that you would be able to unmount the original root directory and proceed as if it had never been in use.
 
 
 
-chroot is intended to apply for
+*chroot* is intended to apply for
 the lifetime of a single process, with the rest of the system continuing to run in the old root dir, and the system being unchanged when the chrooted process exits.
 
 The difference is shrinking now that Linux has per-process namespaces anyway. If you "chroot" a single init-type process that never exits and don't care about unmounting the original root, it's the same for practical purposes.
