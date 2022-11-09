@@ -1,6 +1,37 @@
 # Architectures for high availability of PostgreSQL clusters 
 
+<!-- TOC -->
 
+- [Architectures for high availability of PostgreSQL clusters](#architectures-for-high-availability-of-postgresql-clusters)
+  - [Terminology](#terminology)
+  - [When to consider an HA architecture](#when-to-consider-an-ha-architecture)
+    - [Consider your requirements for HA](#consider-your-requirements-for-ha)
+  - [How HA works](#how-ha-works)
+    - [Streaming replication](#streaming-replication)
+    - [Synchronous streaming replication](#synchronous-streaming-replication)
+  - [PostgreSQL HA architectures](#postgresql-ha-architectures)
+  - [HA using the Patroni template](#ha-using-the-patroni-template)
+    - [Failure detection](#failure-detection)
+    - [Failover process](#failover-process)
+    - [Query routing](#query-routing)
+    - [Fallback process](#fallback-process)
+  - [HA using the pg_auto_failover extension and service](#ha-using-the-pg_auto_failover-extension-and-service)
+    - [Monitor service](#monitor-service)
+    - [Failure detection](#failure-detection-1)
+    - [Failover process](#failover-process-1)
+    - [Query routing](#query-routing-1)
+    - [Fallback and switchover processes](#fallback-and-switchover-processes)
+  - [Comparison between the HA options](#comparison-between-the-ha-options)
+    - [Setup and architecture](#setup-and-architecture)
+    - [High availability configurability](#high-availability-configurability)
+    - [Ability to handle network partition](#ability-to-handle-network-partition)
+    - [Client configuration](#client-configuration)
+    - [Automation of PostgreSQL node initialization, configuration management](#automation-of-postgresql-node-initialization-configuration-management)
+    - [Customizability and feature richness](#customizability-and-feature-richness)
+    - [Maturity](#maturity)
+  - [Related Blogs](#related-blogs)
+
+<!-- /TOC -->
 This article describes several architectures that provide high availability (HA) for PostgreSQL deployments on Google Cloud. HA is the measure of system resiliency in response to underlying infrastructure failure. In this document, HA refers to the availability of PostgreSQL clusters either within a single cloud region or between multiple regions, depending on the HA architecture.
 
 This document is intended for database administrators, cloud architects, and DevOps engineers who want to learn how to increase PostgreSQL data-tier reliability by improving overall system uptime. This document discusses concepts relevant to running PostgreSQL on Compute Engine. The document doesn't discuss using Cloud SQL for PostgreSQL.
@@ -283,3 +314,124 @@ If there is a node failure, a cluster is left in a degraded state. Patroni's fal
 For example, a node might restart due to a failure in the operating system or underlying infrastructure. If the node is the primary and takes longer than the leader key TTL to restart, a leader election is triggered and a new primary node is selected and promoted. When the stale primary Patroni process starts, it detects that it doesn't have the leader lock, automatically demotes itself to a replica, and joins the cluster in that capacity.
 
 If there is an unrecoverable node failure, such as an unlikely zonal failure, you need to start a new node. A database operator can manually start a new node, or you can use a [stateful regional managed instance group (MIG)](https://cloud.google.com/compute/docs/instance-groups/stateful-migs) with a minimum node count to automate the process. After the new node is created, Patroni detects that the new node is part of an existing cluster and automatically initializes the node as a replica.
+
+
+## HA using the pg_auto_failover extension and service
+[pg_auto_failover](https://github.com/citusdata/pg_auto_failover) is an actively developed, open source (PostgreSQL license) PostgreSQL extension. pg_auto_failover configures an HA architecture by extending existing PostgreSQL capabilities. pg_auto_failover doesn't have any dependencies other than PostgreSQL.
+
+To use the pg_auto-failover extension with an HA architecture, you need at least three nodes, each running PostgreSQL with the extension enabled. Any of the nodes can fail without affecting the uptime of the database group. A collection of nodes managed by pg_auto_failover is called a *formation*. The following diagram shows a pg_auto_failover architecture.
+
+
+![pg_auto_failover architecture](img/architectures-high-availability-postgresql-clusters-compute-engine-pg-auto-failover.png)
+
+**Figure 6**. Diagram of a pg_auto_failover architecture.
+
+Figure 6 shows a pg_auto_failover architecture that consists of two main components: the Monitor service and the Keeper agent. Both the Keeper and Monitor are contained in the pg_auto_failover extension.
+
+
+### Monitor service
+The pg_auto_failover Monitor service is implemented as a PostgreSQL extension; when the service creates a Monitor node, it starts a PostgreSQL instance with the pg_auto_failover extension enabled. The Monitor maintains the global state for the formation, obtains health check status from the member PostgreSQL data nodes, and orchestrates the group using the rules established by a finite state machine ([FSM](https://pg-auto-failover.readthedocs.io/en/latest/failover-state-machine.html)). According to the FSM rules for state transitions, the Monitor communicates instructions to the group nodes for actions like promote, demote, and configuration changes.
+
+
+###  Failure detection
+The Keeper agents on primary and secondary data nodes periodically connect to the Monitor node to communicate their current state, and check whether there are any actions to be executed. The Monitor node also connects to the data nodes to perform a health check by executing the PostgreSQL protocol (libpq) API calls, imitating the [pg_isready()](https://www.postgresql.org/docs/current/app-pg-isready.html) PostgreSQL client application. If neither of these actions are successful after a period of time (30 seconds by default), the Monitor node determines that a data node failure occurred. You can change the PostgreSQL configuration settings to customize monitor timing and number of retries. For more information, see [Failover and fault tolerance](https://pg-auto-failover.readthedocs.io/en/latest/fault-tolerance.html).
+
+If a single-node failure occurs, one of the following is true:
+
+- If the unhealthy data node is a primary, the Monitor starts a failover.
+- If the unhealthy data node is a secondary, the Monitor disables synchronous replication for the unhealthy node.
+- If the failed node is the Monitor node, automated failover isn't possible. To avoid [this single point of failure](https://pg-auto-failover.readthedocs.io/en/latest/faq.html#the-monitor-is-a-spof-in-pg-auto-failover-design-how-should-we-handle-that), you need to ensure that the right monitoring and disaster recovery is in place.
+The following diagram shows the failure scenarios and the formation result states that are described in the preceding list.
+
+
+![pg_auto_failover failure scenarios](img/architectures-high-availability-postgresql-clusters-compute-engine-failure-scenarios.png)
+
+
+**Figure 7**. Diagram of the pg_auto_failover failure scenarios.
+
+### Failover process
+Each database node in the group has the following configuration options that determine the failover process:
+
+- **replication_quorum**: a boolean option. If replication_quorum is set to true, then the node is considered as a potential failover candidate
+- **candidate_priority**: an integer value from 0 through 100. 
+`candidate_priority` has a default value of 50 that you can change to affect failover priority. Nodes are prioritized as potential failover candidates based on the `candidate_priority` value. Nodes that have a higher `candidate_priority` value have a higher priority. *The failover process requires that at least two nodes have a nonzero candidate priority in any pg_auto_failover formation*.
+
+
+If there is a primary node failure, secondary nodes are considered for promotion to primary if they have active synchronous replication and if they are members of the `replication_quorom`.
+
+Secondary nodes are considered for promotion according to the following progressive criteria:
+
+- Nodes with the highest candidate priority
+- Standby with the most advanced WAL log position published to the Monitor
+- Random selection as a final tie break
+
+A failover candidate is a *lagging candidate* when it hasn't published the most advanced LSN position in the WAL. In this scenario, pg_auto_failover orchestrates an intermediate step in the failover mechanism: the lagging candidate fetches the missing WAL bytes from a standby node that has the most advanced LSN position. The standby node is then promoted. Postgres allows this operation because cascading replication lets any standby act as the upstream node for another standby.
+
+
+### Query routing
+
+pg_auto_failure doesn't provide any server-side query routing capabilities. Instead, pg_auto_failure relies on client-side query routing that uses the official PostgreSQL client driver [libpq](https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-PARAMKEYWORDS). When you define the connection URI, the driver can accept multiple hosts in its host keyword.
+
+The client library that your application uses must either wrap libpq or implement the ability to supply multiple hosts for the architecture to support a fully automated failover.
+
+### Fallback and switchover processes
+
+When the Keeper process restarts a failed node or starts a new replacement node, the process checks the Monitor node to determine the next action to perform. If a failed, restarted node was formerly the primary, and the Monitor has already picked a new primary according to the failover process, the Keeper reinitializes this stale primary as a secondary replica.
+
+pg_auto_failure provides the `pg_autoctl` tool, which lets you run switchovers to test the node failover process. Along with letting operators test their HA setups in production, the tool helps you restore an HA cluster back to a healthy state after a failover.
+
+
+## Comparison between the HA options
+The following tables provide a comparison of the HA options available from Patroni, pg_auto_failover, and Stateful MIGs with regional persistent disks.
+
+### Setup and architecture 
+Patroni	|pg_auto_failover	
+-----| --------
+Requires an HA architecture, DCS setup, and monitoring and alerting. Agent setup on data nodes is relatively straightforward. [V2.0.0](https://patroni.readthedocs.io/en/latest/releases.html#version-2-0-0) introduced beta support Patroni on pure RAFT which removes the need for a DCS. | Doesn't require any external dependencies other than PostgreSQL. Requires a node dedicated as a monitor. [The monitor node requires HA and DR to ensure that it isn't a single point of failure (SPOF)](https://pg-auto-failover.readthedocs.io/en/latest/faq.html#the-monitor-is-a-spof-in-pg-auto-failover-design-how-should-we-handle-that).
+
+
+### High availability configurability
+
+Patroni	| pg_auto_failover	
+----|-----
+Extremely configurable: supports both synchronous and asynchronous replication, and lets you specify which nodes are to be synchronous and asynchronous. Includes automatic management of the synchronous nodes. Allows for multiple zone and multi-region HA setups. The DCS must be accessible.	|Similar to Patroni: very configurable. However, because the monitor is only available as a single instance, any type of setup needs to consider access to this node.
+
+
+### Ability to handle network partition
+
+Patroni	| pg_auto_failover
+----- | ------	
+Self-fencing along with an OS-level monitor provides protection against split brain. Any failure to connect to the DCS results in the primary demoting itself to a replica and triggering a failover to ensure durability over availability.	|Uses a combination of [health checks from the primary to the monitor and to the replica](https://pg-auto-failover.readthedocs.io/en/latest/fault-tolerance.html#network-partitions) to detect a network partition, and demotes itself if necessary.
+
+
+### Client configuration
+
+
+Patroni	| pg_auto_failover	
+----- | -------
+Transparent to the client because it connects to a load balancer. | 	Requires client library to support multiple host definition in setup because it isn't easily fronted with a load balancer.
+
+
+### Automation of PostgreSQL node initialization, configuration management
+
+Patroni	| pg_auto_failover	
+----- | --------
+Provides tools to manage PostgreSQL configuration (patronictl edit-config) and automatically initializes new nodes or restarted nodes in the cluster. You can initialize nodes using pg_basebackup or other tools like WALL-E and barman.	| Automatically initializes nodes, but limited to only using pg_basebackup when initializing a new replica node. Configuration management is limited to pg_auto_failover-related configurations.
+
+### Customizability and feature richness
+Patroni	| pg_auto_failover	
+-----| -------
+Provides a hook interface to allow for user definable actions to be called at key steps, such as on demotion or on promotion. Feature-rich configurability like support for different types of DCS, different means to initialize replicas, and different ways to provide PostgreSQL configuration.Lets you set up standby clusters that allow for cascaded replica clusters to ease migration between clusters.| Limited because it's a relatively new project.
+
+
+### Maturity
+Patroni	| pg_auto_failover	
+----| -----
+Project has been available since 2015 and it's used in production by large companies like Zalando and GitLab.	| Relatively new project announced early 2019.
+
+
+
+## Related Blogs
+
+1. [Patroni](https://patroni.readthedocs.io/en/latest/README.html)
+2. [pg_auto_failover](https://pg-auto-failover.readthedocs.io/en/latest/index.html)
