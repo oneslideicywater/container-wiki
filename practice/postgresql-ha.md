@@ -32,6 +32,8 @@
   - [Related Blogs](#related-blogs)
 
 <!-- /TOC -->
+
+
 This article describes several architectures that provide high availability (HA) for PostgreSQL deployments on Google Cloud. HA is the measure of system resiliency in response to underlying infrastructure failure. In this document, HA refers to the availability of PostgreSQL clusters either within a single cloud region or between multiple regions, depending on the HA architecture.
 
 This document is intended for database administrators, cloud architects, and DevOps engineers who want to learn how to increase PostgreSQL data-tier reliability by improving overall system uptime. This document discusses concepts relevant to running PostgreSQL on Compute Engine. The document doesn't discuss using Cloud SQL for PostgreSQL.
@@ -385,6 +387,8 @@ pg_auto_failure provides the `pg_autoctl` tool, which lets you run switchovers t
 The following tables provide a comparison of the HA options available from Patroni, pg_auto_failover, and Stateful MIGs with regional persistent disks.
 
 ### Setup and architecture 
+
+
 Patroni	|pg_auto_failover	
 -----| --------
 Requires an HA architecture, DCS setup, and monitoring and alerting. Agent setup on data nodes is relatively straightforward. [V2.0.0](https://patroni.readthedocs.io/en/latest/releases.html#version-2-0-0) introduced beta support Patroni on pure RAFT which removes the need for a DCS. | Doesn't require any external dependencies other than PostgreSQL. Requires a node dedicated as a monitor. [The monitor node requires HA and DR to ensure that it isn't a single point of failure (SPOF)](https://pg-auto-failover.readthedocs.io/en/latest/faq.html#the-monitor-is-a-spof-in-pg-auto-failover-design-how-should-we-handle-that).
@@ -419,15 +423,17 @@ Patroni	| pg_auto_failover
 Provides tools to manage PostgreSQL configuration (patronictl edit-config) and automatically initializes new nodes or restarted nodes in the cluster. You can initialize nodes using pg_basebackup or other tools like WALL-E and barman.	| Automatically initializes nodes, but limited to only using pg_basebackup when initializing a new replica node. Configuration management is limited to pg_auto_failover-related configurations.
 
 ### Customizability and feature richness
+
 Patroni	| pg_auto_failover	
 -----| -------
 Provides a hook interface to allow for user definable actions to be called at key steps, such as on demotion or on promotion. Feature-rich configurability like support for different types of DCS, different means to initialize replicas, and different ways to provide PostgreSQL configuration.Lets you set up standby clusters that allow for cascaded replica clusters to ease migration between clusters.| Limited because it's a relatively new project.
 
 
 ### Maturity
+
 Patroni	| pg_auto_failover	
 ----| -----
-Project has been available since 2015 and it's used in production by large companies like Zalando and GitLab.	| Relatively new project announced early 2019.
+Project has been available since 2015 and it's used in production by large companies like Zalando and GitLab.| Relatively new project announced early 2019.
 
 
 
